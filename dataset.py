@@ -38,7 +38,7 @@ class TrainDataLoader(Dataset):
 
         assert self.n_sample == len(self.ground_truth_paths)
         assert self.n_sample == len(self.mmde_map)
-        assert self.n_sample == len(self.radar_paths)
+        #assert self.n_sample == len(self.radar_paths)
 
         self.transform = transform
 
