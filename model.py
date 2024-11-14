@@ -13,6 +13,8 @@ import cv2
 
 from convolutions import SparseConv,upconv
 
+from object_det_utils import autopad, Conv, DFL, make_anchors, dist2bbox
+
 class mmde_encoder(nn.Module):
     def __init__(self,params):
         super(mmde_encoder,self).__init__()
@@ -196,3 +198,127 @@ class association_decoder(nn.Module):
     # confidence = depth_conf[:, 1:2]
 
     return final_depth #confidence, depth,
+   
+class RCU(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(RCU, self).__init__()
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=2, padding=1)
+        self.relu1 = nn.ReLU()
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=2, padding=1)
+        self.relu2 = nn.ReLU()
+
+        self.maxpool = nn.MaxPool2d(kernel_size=4, stride=4)
+
+    def forward(self, input):
+        x = self.relu1(self.conv1(input))
+        x = self.relu2(self.conv2(x))
+       # x = x + self.maxpool(input)
+        return x
+    
+
+class DetectionHead(nn.Module):
+    """
+    • This detection head module contains 3 heads, each takes input from
+      different levels/ scales of light-weight refinenet network. Specifically [upconv2, upconv3, upconv4].
+    • Each of the 3 heads are decoupled (i.e. seperate bounding box block and classification block)
+    • This module is an implementation of YoloV8 head. Made changes to integrate it with the Multi-Task Network.
+
+    Reference: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/modules/head.py
+
+    """
+    shape = None
+    anchors = torch.empty(0)  # init
+    strides = torch.empty(0)  # init
+
+    def __init__(
+        self,
+        num_classes=80,
+        decoder_channels=(224, 256, 512),
+        head_channels=(64, 128, 256),
+        stride=(8, 16, 32),
+        reg_max=16
+    ):
+        """
+        Parameters:
+        ----------
+
+        num_classes: int
+            The number of classes
+        decoder_channels: tuple
+            A tuple of decoder (LIGHT-WEIGHT REFINENET) out-channels at various layers l7, l5, l3 respectively
+        head_channels: tuple
+            A tuple of input-channels for the 3 heads of the detecion head
+        stride: tuple
+            A tuple of strides at different scales
+        reg_max: int
+            Anchor scale factor
+        """
+
+        super().__init__()
+
+        self.num_classes = num_classes  # number of classes
+        self.reg_max = reg_max # DFL channels (head_channels[0] // 16 to scale: 4)
+        self.decoder_channels = decoder_channels
+        self.num_heads = len(head_channels)  # num of detection heads
+        self.no = self.num_classes + self.reg_max * 4  # number of outputs per anchor
+        self.stride = torch.tensor(stride)  # strides will be computed during build using this (only once)
+
+        self.reduce_spacial_dim = nn.ModuleList(RCU(in_channels = in_, out_channels= out_) for in_,out_ in zip(decoder_channels,head_channels))
+
+
+        c2 = max((16, head_channels[0] // 4, self.reg_max * 4))
+        c3 = max(head_channels[0], self.num_classes)
+
+        self.bbox_layers = nn.ModuleList(
+            nn.Sequential(Conv(x, c2, 3), Conv(c2, c2, 3), nn.Conv2d(c2, 4 * self.reg_max, 1))
+            for x in head_channels
+        )   # [P3, P4, P5]
+
+        self.class_layers = nn.ModuleList(
+            nn.Sequential(Conv(x, c3, 3), Conv(c3, c3, 3), nn.Conv2d(c3, self.num_classes, 1))
+            for x in head_channels
+        )   # [P3, P4, P5]
+
+        self.dfl = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
+
+    def forward(self, x):
+
+        for i in range(self.num_heads):
+            xin = self.reduce_spacial_dim[i](x[i])  # reduce spacial dimensions of the input
+            box_out = self.bbox_layers[i](xin)  # box_out_channels = 4 * self.reg_max = 16
+            cls_out = self.class_layers[i](xin) # cls_out_channels = no of classes
+            x[i] = torch.cat((box_out, cls_out), 1) # N_CHANNELS = self.no = box_out_channels + cls_out_channels
+
+        if self.training:
+            # For input imahe height = 192, width = 640
+            # x[0] shape = (batch_size, self.no, 40, 80)
+            # x[1] shape = (batch_size, self.no, 12, 40)
+            # x[2] shape = (batch_size, self.no, 6, 20)
+            return x
+
+        # N_OUT = (6 * 20) + (12 * 40) + (24 * 80) = 2520
+
+        shape = x[0].shape  # BCHW
+        if self.shape != shape:
+            self.anchors, self.strides = (x.transpose(0, 1) for x in make_anchors(x, self.stride, 0.5))
+            self.shape = shape
+            # shape: self.anchors = (2, N_OUT); self.strides = (1, N_OUT)
+
+        x_cat = torch.cat([xi.view(shape[0], self.no, -1) for xi in x], 2) # shape: (batch_size, self.no, N_OUT)
+
+        box, cls = x_cat.split((self.reg_max * 4, self.num_classes), 1)
+        # shape: box = (batch_size, 4 * self.reg_max, N_OUT); cls = (batch_size, no. of classes, N_OUT)
+
+        dbox = dist2bbox(
+            self.dfl(box),
+            self.anchors.unsqueeze(0),
+            xywh=True,
+            dim=1
+        ) * self.strides
+
+        # shape: dbox = (batch_size, 4, N_OUT)
+
+        y = torch.cat((dbox, cls.sigmoid()), 1)  # shape: (batch_size, 4 + no. of classes, N_OUT). e.g (2, 11, 2520)
+
+        return y, x
