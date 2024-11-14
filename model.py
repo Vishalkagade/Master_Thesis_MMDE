@@ -152,6 +152,7 @@ class association_decoder(nn.Module):
     #last layer
     self.get_depth  = torch.nn.Sequential(nn.Conv2d(feat_out_channels_radar[0]//2, 1, 3, 1, 1, bias=False),
                                       nn.ReLU())
+    
 
   def forward(self, image_features, radar_features, mmde_features):
 
@@ -159,25 +160,25 @@ class association_decoder(nn.Module):
     rad_skip0, rad_skip1, rad_skip2, rad_skip3, rad_final = radar_features[0], radar_features[1], radar_features[2], radar_features[3], radar_features[4]
     mmde_skip0, mmde_skip1, mmde_skip2, mmde_skip3, mmde_final = mmde_features[0], mmde_features[1], mmde_features[2], mmde_features[3], mmde_features[4]
 
-    final = torch.cat([img_final, rad_final, mmde_final], axis=1) # 1*1536*10*24
+    final = torch.cat([img_final, rad_final, mmde_final], axis=1) # 1*1536*10*40
     
     upconv5 = self.upconv5(final) # 1536 --> 256
     upconv5 = self.bn5(upconv5)
     upconv5 = self.conv5(upconv5)
     upconv5 = torch.cat([img_skip3, rad_skip3, mmde_skip3, upconv5], axis=1) # 256+256+256+256 --> 1024
 
-    upconv4 = self.upconv4(upconv5) # 1024 --> 128
-    upconv4 = self.bn4(upconv4)
+    upconv4_ = self.upconv4(upconv5) # 1024 --> 128
+    upconv4 = self.bn4(upconv4_)
     upconv4 = self.conv4(upconv4)
     upconv4 = torch.cat([img_skip2, rad_skip2, mmde_skip2, upconv4], axis=1) # 128+128+128+128 --> 512
 
-    upconv3 = self.upconv3(upconv4) # 512 --> 64
-    upconv3 = self.bn3(upconv3)
+    upconv3_ = self.upconv3(upconv4) # 512 --> 64
+    upconv3 = self.bn3(upconv3_)
     upconv3 = self.conv3(upconv3)
     upconv3 = torch.cat([img_skip1, rad_skip1, mmde_skip1, upconv3], axis=1) # 64+64+64+64 --> 256
 
-    upconv2 = self.upconv2(upconv3)
-    upconv2 = self.bn2(upconv2)
+    upconv2_ = self.upconv2(upconv3)
+    upconv2 = self.bn2(upconv2_)
     upconv2 = self.conv2(upconv2)
     upconv2 = torch.cat([img_skip0, rad_skip0, mmde_skip0, upconv2], axis=1) # 64+64+64+64 --> 256
 
@@ -185,10 +186,13 @@ class association_decoder(nn.Module):
     upconv1 = self.bn1(upconv1)
     upconv1 = self.conv1(upconv1)
 
-    # confidence = self.get_depth(upconv1)
-    # depth = self.params.max_depth * confidence
-    depth_conf = self.get_depth(upconv1) # 32 --> 1
+    final_depth = self.get_depth(upconv1) # 32 --> 1
+
+    if self.params.return_object_detection == True:
+      object_detecion_latent_feature = [upconv2, upconv3, upconv4] # 224, 256, 512
+      return final_depth,object_detecion_latent_feature
+
     # depth = 90 * depth_conf[:, 0:1]
     # confidence = depth_conf[:, 1:2]
 
-    return depth_conf #confidence, depth,
+    return final_depth #confidence, depth,
