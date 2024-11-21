@@ -124,7 +124,7 @@ class association_decoder(nn.Module):
 
     self.params = params
     #first upsamsling
-    self.upconv5 = upconv(feat_out_channels_img[4] + feat_out_channels_radar[4]+feat_out_channels_mmde[4], feat_out_channels_radar[4]//2) #
+    self.upconv5 = upconv(feat_out_channels_img[4] + feat_out_channels_radar[4]+feat_out_channels_mmde[4], feat_out_channels_radar[4]//2) #[64, 64, 128, 256, 512]
     self.bn5 = nn.BatchNorm2d(feat_out_channels_radar[4]//2, momentum=0.01, affine=True, eps=1.1e-5)
     self.conv5 = torch.nn.Sequential(nn.Conv2d(feat_out_channels_radar[4]//2, feat_out_channels_radar[4]//2, 3, 1, 1, bias=False),
                                           nn.ELU())
@@ -140,7 +140,7 @@ class association_decoder(nn.Module):
     self.conv3      = torch.nn.Sequential(nn.Conv2d(feat_out_channels_radar[2]//2, feat_out_channels_radar[2]//2, 3, 1, 1, bias=False),
                                           nn.ELU())
     #forth upsmapling
-    self.upconv2    = upconv(feat_out_channels_img[1]+feat_out_channels_radar[1]+feat_out_channels_mmde[1]+feat_out_channels_radar[2]//2, feat_out_channels_radar[1]//2)
+    self.upconv2    = upconv(feat_out_channels_img[1]+feat_out_channels_radar[1]+feat_out_channels_mmde[1]+feat_out_channels_radar[2]//2, feat_out_channels_radar[1])
     self.bn2        = nn.BatchNorm2d(feat_out_channels_radar[1]//2, momentum=0.01, affine=True, eps=1.1e-5)
     self.conv2      = torch.nn.Sequential(nn.Conv2d(feat_out_channels_radar[1]//2, feat_out_channels_radar[1]//2, 3, 1, 1, bias=False),
                                       nn.ELU())
